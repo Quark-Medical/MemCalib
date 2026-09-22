@@ -1,0 +1,170 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+actor_rollout_ref:
+  hybrid_engine: true
+  model:
+    path: ???
+    enable_gradient_checkpointing: true
+    use_remove_padding: true
+  actor:
+    strategy: fsdp
+    optim:
+      lr: 1.0e-6
+    ppo_mini_batch_size: 32
+    ppo_micro_batch_size_per_gpu: 4
+    ppo_epochs: 1
+    shuffle: false
+    loss_agg_mode: token-mean
+    use_kl_loss: true
+    kl_loss_coef: 0.01
+    kl_loss_type: low_var_kl
+    fsdp_config:
+      param_offload: false
+      optimizer_offload: false
+  rollout:
+    name: vllm
+    mode: async
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.6
+    temperature: 1.0
+    top_k: -1
+    top_p: 1.0
+    n: 8
+    log_prob_micro_batch_size_per_gpu: 4
+    calculate_log_probs: false
+  ref:
+    log_prob_micro_batch_size_per_gpu: 4
+    fsdp_config:
+      param_offload: true
+
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 1.0
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+  rollout_correction:
+    rollout_is: null
+    rollout_rs: null
+    bypass_mode: false
+
+data:
+  train_files: ???
+  val_files: ???
+  train_batch_size: 64
+  max_prompt_length: 4096
+  max_response_length: 2048
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+  seed: 20260729
+  validation_shuffle: false
+  apply_chat_template_kwargs:
+    enable_thinking: false
+
+critic:
+  enable: false
+
+trainer:
+  balance_batch: true
+  total_epochs: 1
+  project_name: memcalib
+  experiment_name: ???
+  logger: ["console", "tensorboard"]
+  nnodes: 1
+  n_gpus_per_node: 8
+  save_freq: 30
+  test_freq: 30
+  val_before_train: true
+  critic_warmup: 0
+  default_local_dir: ???
+
+# One reward-loop actor shares Judge concurrency/RPM limits across the batch
+# while evaluating rollouts concurrently.
+reward:
+  num_workers: 1
+  reward_manager:
+    source: importlib
+    name: MemCalibRewardManager
+    module:
+      path: recipe/memcalib_credit/reward_manager.py
+      name: recipe.memcalib_credit.reward_manager
+  reward_model:
+    enable: false
+
+credit:
+  # fine_grained: configurable merged/split A-overuse channels + localization
+  # gdpo:         nine separately normalized channels, uniformly broadcast
+  # grpo:         combine nine raw channels first, then scalar GRPO
+  method: fine_grained
+  fine_grained:
+    # True merges AB- and AC- into one A-overuse channel.
+    merge_a_overuse: true
+  epsilon_group: 1.0e-6
+  sigma_min: 1.0e-6
+  epsilon_scale: 1.0e-6
+  kappa_a: 2.0
+  counterfactual_batch_size: 256
+  channel_weights:
+    "A-": 1.0
+    "AB-": 1.0
+    "AC-": 1.0
+    "B+": 1.0
+    "B-": 1.0
+    "C+": 1.0
+    "C-": 1.0
+    "A0+": 1.0
+    "B0-": 1.0
+    "C0-": 1.0
+  segment:
+    min_tokens: 4
+    max_tokens: 96
+  trace:
+    enabled: false
+    output_dir: null
+    compression_level: 1
+  localization:
+    # positive_only uses one-sided localization.
+    # ordered_bidirectional aligns the sign with the ordered A/B/C transition.
+    # absolute_magnitude uses |full-minus-ablated| for active non-A0 channels.
+    mode: positive_only
+    # Localize credit at sentence or token granularity.
+    granularity: sentence
+    delta_clip: 3.0
+    coverage_gamma: 1.0
+    multiplier_cap: 4.0
+    eta:
+      "A-": 0.7
+      "AB-": 0.7
+      "AC-": 0.7
+      "B0-": 0.5
+      "B+": 0.5
+      "B-": 0.7
+      "C0-": 0.5
+      "C+": 0.3
+      "C-": 0.5
+  threshold:
+    token_quantile: 0.75
+    sentence_quantile: 0.70
+    ema: 0.9
+    absolute_token: 0.02
+    absolute_sentence: 0.01
+    initial_token: 0.02
+    initial_sentence: 0.01
+    min_token_samples: 256
+    min_sentence_samples: 32
+  judge:
+    api_key_env: DASHSCOPE_API_KEY
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    judge_model: deepseek-v4-pro
+    max_concurrent: 64
+    requests_per_minute: 240
+    max_retries: 4
+    max_tokens: 16384
+    timeout: 300
